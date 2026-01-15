@@ -230,22 +230,90 @@ export const getDownloadUrl = (path: string): string => {
 // Health Check
 // ============================================
 
+export type HealthStatus = {
+    online: boolean;
+    error?: 'cors' | 'network' | 'auth' | 'timeout' | 'unknown';
+    message?: string;
+};
+
 /**
  * Checks if the backend server is reachable and healthy.
+ * Returns detailed status to distinguish between different error types.
  */
 export const checkHealth = async (): Promise<boolean> => {
+    const status = await checkHealthDetailed();
+    return status.online;
+};
+
+/**
+ * Detailed health check that returns error type for better debugging.
+ */
+export const checkHealthDetailed = async (): Promise<HealthStatus> => {
     try {
         const baseUrl = API_BASE_URL || window.location.origin;
         const response = await axios.get(`${baseUrl}/health`, {
-            timeout: 5000,
+            timeout: 10000, // 10 second timeout for health check
             // Don't use the api instance to avoid auth requirement
         });
-        return response.status === 200 && response.data?.status === 'ok';
+
+        if (response.status === 200 && response.data?.status === 'ok') {
+            return { online: true };
+        }
+
+        return {
+            online: false,
+            error: 'unknown',
+            message: 'Unexpected response from server'
+        };
     } catch (error) {
         if (import.meta.env.DEV) {
-            console.warn('Health check failed:', error instanceof Error ? error.message : 'Unknown error');
+            console.warn('Health check failed:', error);
         }
-        return false;
+
+        if (axios.isAxiosError(error)) {
+            // Check for CORS error (typically shows as network error with no response)
+            if (error.code === 'ERR_NETWORK' && !error.response) {
+                // CORS errors and network unreachable both appear the same way
+                return {
+                    online: false,
+                    error: 'cors',
+                    message: 'CORS error or server unreachable. Check backend CORS configuration.'
+                };
+            }
+
+            // Timeout
+            if (error.code === 'ECONNABORTED') {
+                return {
+                    online: false,
+                    error: 'timeout',
+                    message: 'Server took too long to respond.'
+                };
+            }
+
+            // Auth error
+            if (error.response?.status === 401 || error.response?.status === 403) {
+                return {
+                    online: true, // Server is online, just auth failed
+                    error: 'auth',
+                    message: 'Authentication error. Check API key.'
+                };
+            }
+
+            // Other HTTP errors mean server is reachable
+            if (error.response) {
+                return {
+                    online: true,
+                    error: 'unknown',
+                    message: `Server returned status ${error.response.status}`
+                };
+            }
+        }
+
+        return {
+            online: false,
+            error: 'network',
+            message: 'Cannot connect to server.'
+        };
     }
 };
 

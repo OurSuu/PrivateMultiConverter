@@ -6,7 +6,6 @@ import FileConverter from './components/FileConverter';
 import YouTubeDownloader from './components/YouTubeDownloader';
 import QRCodeGenerator from './components/QRCodeGenerator';
 import NotificationToast, { toast } from './components/NotificationToast';
-import { checkHealth } from './services/api';
 
 type Tab = 'converter' | 'youtube' | 'qrcode';
 
@@ -55,10 +54,27 @@ function App() {
     // Health check on mount
     useEffect(() => {
         const checkServerHealth = async () => {
-            const healthy = await checkHealth();
-            setIsOnline(healthy);
-            if (!healthy) {
-                toast.warning('Backend server is not responding. Some features may not work.');
+            // Import the detailed health check
+            const { checkHealthDetailed } = await import('./services/api');
+            const status = await checkHealthDetailed();
+
+            setIsOnline(status.online);
+
+            // Show appropriate message based on error type
+            if (!status.online) {
+                switch (status.error) {
+                    case 'cors':
+                        toast.error('Cannot connect to server. CORS or network issue.');
+                        break;
+                    case 'timeout':
+                        toast.warning('Server is slow to respond.');
+                        break;
+                    case 'auth':
+                        toast.warning('Server online but authentication failed.');
+                        break;
+                    default:
+                        toast.warning('Backend server is not responding.');
+                }
             }
         };
 
