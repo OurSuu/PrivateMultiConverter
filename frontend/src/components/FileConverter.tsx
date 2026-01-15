@@ -4,24 +4,59 @@ import { useDropzone } from 'react-dropzone';
 import ProgressBar from './ProgressBar';
 import SuccessAnimation from './SuccessAnimation';
 import { convertFile, pollConversionStatus, getDownloadUrl } from '../services/api';
+import { toast } from './NotificationToast';
 import type { ConversionType, ConversionJob } from '../types';
 
-const conversionOptions: { value: ConversionType; label: string; description: string; accept: string; icon: string }[] = [
-    { value: 'mp4-to-mp3', label: 'MP4 → MP3', description: 'Extract audio', accept: '.mp4', icon: '🎵' },
-    { value: 'image-to-webp', label: 'Image → WebP', description: 'Optimize images', accept: '.png,.jpg,.jpeg', icon: '🖼️' },
-    { value: 'pdf-to-jpg', label: 'PDF → JPG', description: 'PDF to image', accept: '.pdf', icon: '📄' },
-    { value: 'docx-to-pdf', label: 'DOCX → PDF', description: 'Word to PDF', accept: '.docx', icon: '📝' },
+// ============================================
+// Conversion Options Configuration
+// ============================================
+
+interface ConversionOption {
+    value: ConversionType;
+    label: string;
+    description: string;
+    accept: string;
+    icon: string;
+    category: 'image' | 'audio' | 'document';
+}
+
+const conversionOptions: ConversionOption[] = [
+    // Image conversions
+    { value: 'png-to-jpg', label: 'PNG → JPG', description: 'Convert PNG to JPG', accept: '.png', icon: '🖼️', category: 'image' },
+    { value: 'jpg-to-png', label: 'JPG → PNG', description: 'Convert JPG to PNG', accept: '.jpg,.jpeg', icon: '🖼️', category: 'image' },
+    { value: 'png-to-webp', label: 'PNG → WebP', description: 'PNG to modern WebP', accept: '.png', icon: '🖼️', category: 'image' },
+    { value: 'jpg-to-webp', label: 'JPG → WebP', description: 'JPG to modern WebP', accept: '.jpg,.jpeg', icon: '🖼️', category: 'image' },
+    { value: 'webp-to-png', label: 'WebP → PNG', description: 'WebP to PNG', accept: '.webp', icon: '🖼️', category: 'image' },
+    { value: 'webp-to-jpg', label: 'WebP → JPG', description: 'WebP to JPG', accept: '.webp', icon: '🖼️', category: 'image' },
+    // Audio conversions
+    { value: 'mp4-to-mp3', label: 'MP4 → MP3', description: 'Extract audio', accept: '.mp4', icon: '🎵', category: 'audio' },
+    // Document conversions
+    { value: 'pdf-to-jpg', label: 'PDF → JPG', description: 'PDF to image', accept: '.pdf', icon: '📄', category: 'document' },
+    { value: 'docx-to-pdf', label: 'DOCX → PDF', description: 'Word to PDF', accept: '.docx', icon: '📝', category: 'document' },
 ];
 
+// MIME type mapping for dropzone
+const mimeTypes: Record<string, string> = {
+    '.mp4': 'video/mp4',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.pdf': 'application/pdf',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
 export default function FileConverter() {
-    const [selectedType, setSelectedType] = useState<ConversionType>('mp4-to-mp3');
+    const [selectedType, setSelectedType] = useState<ConversionType>('png-to-jpg');
     const [file, setFile] = useState<File | null>(null);
     const [job, setJob] = useState<ConversionJob | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [showSuccess, setShowSuccess] = useState(false);
+    const [activeCategory, setActiveCategory] = useState<'image' | 'audio' | 'document'>('image');
 
     const currentOption = conversionOptions.find(o => o.value === selectedType)!;
+    const filteredOptions = conversionOptions.filter(o => o.category === activeCategory);
 
     const onDrop = useCallback((acceptedFiles: File[]) => {
         if (acceptedFiles.length > 0) {
@@ -35,15 +70,10 @@ export default function FileConverter() {
     const { getRootProps, getInputProps, isDragActive } = useDropzone({
         onDrop,
         accept: currentOption.accept.split(',').reduce((acc, ext) => {
-            const mimeTypes: Record<string, string> = {
-                '.mp4': 'video/mp4',
-                '.png': 'image/png',
-                '.jpg': 'image/jpeg',
-                '.jpeg': 'image/jpeg',
-                '.pdf': 'application/pdf',
-                '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            };
-            acc[mimeTypes[ext]] = [ext];
+            const mime = mimeTypes[ext];
+            if (mime) {
+                acc[mime] = [ext];
+            }
             return acc;
         }, {} as Record<string, string[]>),
         maxFiles: 1,
@@ -64,6 +94,7 @@ export default function FileConverter() {
 
             setJob(initialJob);
 
+            // Poll for status
             let currentJob = initialJob;
             while (currentJob.status === 'pending' || currentJob.status === 'processing') {
                 await new Promise(resolve => setTimeout(resolve, 1000));
@@ -73,11 +104,15 @@ export default function FileConverter() {
 
             if (currentJob.status === 'error') {
                 setError(currentJob.error || 'Conversion failed');
+                toast.error(currentJob.error || 'Conversion failed');
             } else if (currentJob.status === 'completed') {
                 setShowSuccess(true);
+                toast.success('Conversion completed!');
             }
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'An error occurred');
+            const message = err instanceof Error ? err.message : 'An error occurred';
+            setError(message);
+            toast.error(message);
         } finally {
             setIsProcessing(false);
         }
@@ -98,13 +133,38 @@ export default function FileConverter() {
 
     return (
         <div className="space-y-6">
+            {/* Category Tabs */}
+            <div className="flex gap-2 justify-center">
+                {(['image', 'audio', 'document'] as const).map((cat) => (
+                    <button
+                        key={cat}
+                        onClick={() => {
+                            setActiveCategory(cat);
+                            const firstOption = conversionOptions.find(o => o.category === cat);
+                            if (firstOption) {
+                                setSelectedType(firstOption.value);
+                            }
+                            setFile(null);
+                            setError(null);
+                            setShowSuccess(false);
+                        }}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeCategory === cat
+                                ? 'bg-gold-500/20 text-gold-300 border border-gold-500/50'
+                                : 'bg-dark-800 text-dark-400 border border-dark-700 hover:border-dark-500'
+                            }`}
+                    >
+                        {cat === 'image' ? '🖼️ Images' : cat === 'audio' ? '🎵 Audio' : '📄 Documents'}
+                    </button>
+                ))}
+            </div>
+
             {/* Conversion Type Selector */}
             <div>
                 <label className="block text-sm font-medium text-dark-300 mb-3">
                     Select Conversion Type
                 </label>
-                <div className="grid grid-cols-2 gap-3">
-                    {conversionOptions.map((option) => (
+                <div className={`grid gap-3 ${filteredOptions.length <= 4 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+                    {filteredOptions.map((option) => (
                         <motion.button
                             key={option.value}
                             onClick={() => {
