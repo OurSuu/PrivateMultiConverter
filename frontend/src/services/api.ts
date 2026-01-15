@@ -4,9 +4,8 @@
  * Handles all communication with the backend API.
  * Supports both local development and production environments.
  * 
- * Environment Variables:
- * - VITE_API_BASE_URL: Backend URL (e.g., http://localhost:3001)
- * - VITE_API_KEY: API key for authentication
+ * IMPORTANT: In production, you MUST set VITE_API_BASE_URL to your backend URL.
+ * Example: VITE_API_BASE_URL=https://your-tunnel.ngrok.io
  */
 
 import axios, { AxiosError, AxiosResponse } from 'axios';
@@ -27,11 +26,23 @@ import type {
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || '';
 const API_KEY = import.meta.env.VITE_API_KEY || '';
 
-// Log configuration in development
+// Check if running in production without API URL configured
+const isProduction = import.meta.env.PROD;
+const isMissingBaseUrl = !API_BASE_URL && isProduction;
+
+// Log configuration
 if (import.meta.env.DEV) {
     console.log('🔌 API Configuration:');
-    console.log(`   Base URL: ${API_BASE_URL || '(empty - using relative URLs)'}`);
+    console.log(`   Base URL: ${API_BASE_URL || '(empty - using Vite proxy)'}`);
     console.log(`   API Key: ${API_KEY ? '✓ Configured' : '✗ Not Set'}`);
+}
+
+// CRITICAL WARNING: Missing API URL in production
+if (isMissingBaseUrl) {
+    console.error('❌ CRITICAL: VITE_API_BASE_URL is not set in production!');
+    console.error('   All API calls will fail with "Endpoint not found".');
+    console.error('   Set this in Vercel Environment Variables:');
+    console.error('   VITE_API_BASE_URL = https://your-backend-tunnel-url');
 }
 
 // ============================================
@@ -69,6 +80,10 @@ api.interceptors.response.use(
                 case 403:
                     throw new Error('Access denied. Invalid API key.');
                 case 404:
+                    // Check if this might be a missing base URL issue
+                    if (isMissingBaseUrl) {
+                        throw new Error('API not configured. Backend URL is missing in environment variables.');
+                    }
                     throw new Error('Endpoint not found. Please check if the backend is running.');
                 case 429:
                     throw new Error('Too many requests. Please wait a moment and try again.');
@@ -87,6 +102,9 @@ api.interceptors.response.use(
                 throw new Error('Request timed out. The operation is taking too long.');
             }
             if (error.code === 'ERR_NETWORK') {
+                if (isMissingBaseUrl) {
+                    throw new Error('Backend URL not configured. Set VITE_API_BASE_URL in Vercel.');
+                }
                 throw new Error('Cannot connect to server. Please ensure the backend is running.');
             }
             throw new Error('Network error. Please check your internet connection.');
@@ -232,7 +250,7 @@ export const getDownloadUrl = (path: string): string => {
 
 export type HealthStatus = {
     online: boolean;
-    error?: 'cors' | 'network' | 'auth' | 'timeout' | 'unknown';
+    error?: 'cors' | 'network' | 'auth' | 'timeout' | 'config' | 'unknown';
     message?: string;
 };
 
@@ -249,11 +267,19 @@ export const checkHealth = async (): Promise<boolean> => {
  * Detailed health check that returns error type for better debugging.
  */
 export const checkHealthDetailed = async (): Promise<HealthStatus> => {
+    // If no base URL is configured in production, return config error
+    if (isMissingBaseUrl) {
+        return {
+            online: false,
+            error: 'config',
+            message: 'VITE_API_BASE_URL not configured. Set it in Vercel environment variables.'
+        };
+    }
+
     try {
         const baseUrl = API_BASE_URL || window.location.origin;
         const response = await axios.get(`${baseUrl}/health`, {
             timeout: 10000, // 10 second timeout for health check
-            // Don't use the api instance to avoid auth requirement
         });
 
         if (response.status === 200 && response.data?.status === 'ok') {
@@ -273,7 +299,6 @@ export const checkHealthDetailed = async (): Promise<HealthStatus> => {
         if (axios.isAxiosError(error)) {
             // Check for CORS error (typically shows as network error with no response)
             if (error.code === 'ERR_NETWORK' && !error.response) {
-                // CORS errors and network unreachable both appear the same way
                 return {
                     online: false,
                     error: 'cors',

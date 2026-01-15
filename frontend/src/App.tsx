@@ -63,6 +63,9 @@ function App() {
             // Show appropriate message based on error type
             if (!status.online) {
                 switch (status.error) {
+                    case 'config':
+                        toast.error('Backend URL not configured. Set VITE_API_BASE_URL in Vercel.');
+                        break;
                     case 'cors':
                         toast.error('Cannot connect to server. CORS or network issue.');
                         break;
