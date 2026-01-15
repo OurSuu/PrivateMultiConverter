@@ -1,51 +1,104 @@
-import axios, { AxiosError, AxiosResponse } from 'axios';
-import type { ConversionType, YouTubeFormat, ConversionJob, YouTubeJob, YouTubeVideoInfo, QRCodeResult } from '../types';
+/**
+ * Frontend API Service
+ * 
+ * Handles all communication with the backend API.
+ * Supports both local development and production environments.
+ * 
+ * Environment Variables:
+ * - VITE_API_BASE_URL: Backend URL (e.g., http://localhost:3001)
+ * - VITE_API_KEY: API key for authentication
+ */
 
-const API_URL = import.meta.env.VITE_API_URL || '';
+import axios, { AxiosError, AxiosResponse } from 'axios';
+import type {
+    ConversionType,
+    YouTubeFormat,
+    ConversionJob,
+    YouTubeJob,
+    YouTubeVideoInfo,
+    QRCodeResult
+} from '../types';
+
+// ============================================
+// Environment Configuration
+// ============================================
+
+// Support both VITE_API_URL and VITE_API_BASE_URL for compatibility
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || '';
 const API_KEY = import.meta.env.VITE_API_KEY || '';
 
-// Create axios instance with defaults
+// Log configuration in development
+if (import.meta.env.DEV) {
+    console.log('🔌 API Configuration:');
+    console.log(`   Base URL: ${API_BASE_URL || '(empty - using relative URLs)'}`);
+    console.log(`   API Key: ${API_KEY ? '✓ Configured' : '✗ Not Set'}`);
+}
+
+// ============================================
+// Axios Instance
+// ============================================
+
 const api = axios.create({
-    baseURL: API_URL,
-    timeout: 120000, // 2 minute timeout for large files
+    baseURL: API_BASE_URL,
+    timeout: 300000, // 5 minute timeout for large files/long downloads
     headers: {
         'x-api-key': API_KEY,
     },
 });
 
-// Response interceptor for error handling
+// ============================================
+// Response Interceptor for Error Handling
+// ============================================
+
 api.interceptors.response.use(
     (response: AxiosResponse) => response,
     (error: AxiosError<{ message?: string; error?: string }>) => {
+        // Log error in development
+        if (import.meta.env.DEV) {
+            console.error('API Error:', error.response?.data || error.message);
+        }
+
         if (error.response) {
             // Server responded with an error
             const message = error.response.data?.message || error.response.data?.error || 'An error occurred';
             const status = error.response.status;
 
-            if (status === 401) {
-                throw new Error('Authentication failed. Please check your API key.');
-            } else if (status === 403) {
-                throw new Error('Access denied. Invalid API key.');
-            } else if (status === 429) {
-                throw new Error('Too many requests. Please wait a moment and try again.');
-            } else if (status === 413) {
-                throw new Error('File too large. Maximum size is 100MB.');
-            } else if (status >= 500) {
-                throw new Error('Server error. Please try again later.');
+            switch (status) {
+                case 401:
+                    throw new Error('Authentication failed. Please check your API key configuration.');
+                case 403:
+                    throw new Error('Access denied. Invalid API key.');
+                case 404:
+                    throw new Error('Endpoint not found. Please check if the backend is running.');
+                case 429:
+                    throw new Error('Too many requests. Please wait a moment and try again.');
+                case 413:
+                    throw new Error('File too large. Maximum size is 100MB.');
+                case 500:
+                case 502:
+                case 503:
+                    throw new Error('Server error. Please try again later.');
+                default:
+                    throw new Error(message);
             }
-            throw new Error(message);
         } else if (error.request) {
             // No response received
             if (error.code === 'ECONNABORTED') {
-                throw new Error('Request timed out. Please try again.');
+                throw new Error('Request timed out. The operation is taking too long.');
             }
-            throw new Error('Network error. Please check your connection.');
+            if (error.code === 'ERR_NETWORK') {
+                throw new Error('Cannot connect to server. Please ensure the backend is running.');
+            }
+            throw new Error('Network error. Please check your internet connection.');
         }
         throw new Error('An unexpected error occurred.');
     }
 );
 
-// Retry logic for transient failures
+// ============================================
+// Retry Logic for Transient Failures
+// ============================================
+
 const retryRequest = async <T>(
     fn: () => Promise<T>,
     retries: number = 3,
@@ -54,13 +107,24 @@ const retryRequest = async <T>(
     try {
         return await fn();
     } catch (error) {
-        if (retries > 0 && error instanceof Error && error.message.includes('Network error')) {
+        const isRetryable = error instanceof Error && (
+            error.message.includes('Network error') ||
+            error.message.includes('Cannot connect') ||
+            error.message.includes('timed out')
+        );
+
+        if (retries > 0 && isRetryable) {
+            console.log(`Retrying request... (${retries} attempts left)`);
             await new Promise(resolve => setTimeout(resolve, delay));
             return retryRequest(fn, retries - 1, delay * 2);
         }
         throw error;
     }
 };
+
+// ============================================
+// File Conversion API
+// ============================================
 
 export const convertFile = async (
     file: File,
@@ -77,6 +141,7 @@ export const convertFile = async (
         },
         onUploadProgress: (progressEvent) => {
             if (progressEvent.total && onProgress) {
+                // Upload is 0-50%, processing is 50-100%
                 const progress = Math.round((progressEvent.loaded * 50) / progressEvent.total);
                 onProgress(progress);
             }
@@ -92,6 +157,10 @@ export const pollConversionStatus = async (jobId: string): Promise<ConversionJob
         return response.data;
     });
 };
+
+// ============================================
+// YouTube API
+// ============================================
 
 export const getYouTubeInfo = async (url: string): Promise<YouTubeVideoInfo> => {
     const response = await api.post<YouTubeVideoInfo>('/api/youtube/info', { url });
@@ -118,28 +187,81 @@ export const pollYouTubeStatus = async (jobId: string): Promise<YouTubeJob> => {
     });
 };
 
+// ============================================
+// QR Code API
+// ============================================
+
 export const generateQRCode = async (
-    url: string,
+    content: string,
     options?: { size?: number; darkColor?: string; lightColor?: string }
 ): Promise<QRCodeResult> => {
     const response = await api.post<QRCodeResult>('/api/qrcode/generate', {
-        url,
+        url: content,
         ...options
     });
     return response.data;
 };
 
+// ============================================
+// Download URL Helper
+// ============================================
+
+/**
+ * Constructs a download URL with API key authentication.
+ * The API key is passed as a query parameter for direct browser downloads.
+ */
 export const getDownloadUrl = (path: string): string => {
-    const headers = API_KEY ? `?apiKey=${encodeURIComponent(API_KEY)}` : '';
-    return `${API_URL}${path}${headers}`;
+    // Ensure path starts with /
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+
+    // Build full URL
+    const baseUrl = API_BASE_URL || window.location.origin;
+    const url = new URL(normalizedPath, baseUrl);
+
+    // Add API key as query parameter for authenticated downloads
+    if (API_KEY) {
+        url.searchParams.set('apiKey', API_KEY);
+    }
+
+    return url.toString();
 };
 
-// Health check
+// ============================================
+// Health Check
+// ============================================
+
+/**
+ * Checks if the backend server is reachable and healthy.
+ */
 export const checkHealth = async (): Promise<boolean> => {
     try {
-        const response = await axios.get(`${API_URL}/health`, { timeout: 5000 });
-        return response.status === 200;
-    } catch {
+        const baseUrl = API_BASE_URL || window.location.origin;
+        const response = await axios.get(`${baseUrl}/health`, {
+            timeout: 5000,
+            // Don't use the api instance to avoid auth requirement
+        });
+        return response.status === 200 && response.data?.status === 'ok';
+    } catch (error) {
+        if (import.meta.env.DEV) {
+            console.warn('Health check failed:', error instanceof Error ? error.message : 'Unknown error');
+        }
         return false;
+    }
+};
+
+/**
+ * Gets detailed health information from the backend.
+ */
+export const getHealthInfo = async (): Promise<{
+    status: string;
+    version: string;
+    uptime: number;
+} | null> => {
+    try {
+        const baseUrl = API_BASE_URL || window.location.origin;
+        const response = await axios.get(`${baseUrl}/health`, { timeout: 5000 });
+        return response.data;
+    } catch {
+        return null;
     }
 };
